@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Device Cast</title>
+<script src="$WEBAPIS/webapis/webapis.js"></script>
+<style id="brand-fonts">
+  @font-face { font-family: 'Space Grotesk'; src: url('fonts/SpaceGrotesk.woff2') format('woff2'); font-weight: 300 700; }
+  @font-face { font-family: 'JetBrains Mono'; src: url('fonts/JetBrainsMono.woff2') format('woff2'); font-weight: 400; }
+  @keyframes as-signal { 0% { opacity: .16; } 22% { opacity: 1; } 62% { opacity: 1; } 100% { opacity: .16; } }
+  .as-dot, .as-mid, .as-out { opacity: .16; animation: as-signal 1.8s ease-in-out infinite; }
+  .as-mid { animation-delay: .22s; }
+  .as-out { animation-delay: .44s; }
+  .as-splash { position: absolute; left: 0; top: 0; right: 0; bottom: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; color: #f4f1fb; font-family: 'Space Grotesk', sans-serif;
+    background-color: #0b0716;
+    background-image:
+      radial-gradient(ellipse 60% 55% at 50% 40%, rgba(122, 60, 255, .30), rgba(122, 60, 255, 0) 70%),
+      radial-gradient(ellipse 45% 40% at 85% 100%, rgba(255, 122, 102, .14), rgba(255, 122, 102, 0) 70%),
+      linear-gradient(rgba(255, 255, 255, .045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, .045) 1px, transparent 1px);
+    background-size: auto, auto, 64px 64px, 64px 64px; }
+  .as-logo { width: 440px; height: 275px; }
+  .as-title { margin-top: 44px; font-size: 76px; font-weight: 700; letter-spacing: -0.02em; }
+  .as-status { margin-top: 18px; font-family: 'JetBrains Mono', monospace; font-size: 26px; color: rgba(244, 241, 251, .62); }
+</style>
+<style id="loader-style">
+  html, body { margin: 0; height: 100%; background: #0b0716; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="splash" class="as-splash">
+  <svg class="as-logo" viewBox="100 250 800 500" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="as-brand" x1="380" y1="0" x2="620" y2="0" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#7a3cff"/><stop offset="1" stop-color="#ff7a66"/>
+      </linearGradient>
+    </defs>
+    <path fill="#ffffff" d="M112.6 729V514.5H194.6V565H397.8V484.2H112.6V402.2H399.1L479.8 483V729H397.8V647H194.6V729Z"/>
+    <path fill="#ffffff" d="M887.4 402.2V484.2H602.2V524.6H887.4V648.3L806.6 729H520.2V647H805.4V606.6H520.2V483L600.9 402.2Z"/>
+    <path class="as-dot" fill="url(#as-brand)" d="M486.1 402.2H513.9V411H522.7V419.9H531.5V436.3L522.7 437.5V445.1L513.9 446.4L512.6 455.2H487.4L486.1 446.4H478.5L477.3 437.5L468.5 436.3V419.9H477.3V411H486.1Z"/>
+    <path class="as-mid" fill="url(#as-brand)" d="M574.4 375.7H565.6V384.5H556.8V393.4H539.1V384.5H521.5V375.7H478.5V384.5H460.9V393.4H443.2V384.5H434.4V375.7H425.6V366.9H434.4V358H443.2V349.2H460.9V340.4H477.3L478.5 331.6H521.5L522.7 340.4H539.1V349.2H556.8V358H565.6V366.9H574.4Z"/>
+    <path class="as-out" fill="url(#as-brand)" d="M627.4 331.6L618.6 332.8L617.3 341.6H609.8V350.5H592.1V341.6H583.3V332.8H565.6V324H547.9V315.1H452.1V324H434.4V332.8H416.7V341.6H407.9V350.5H390.2V341.6H382.7L381.4 332.8L372.6 331.6V322.7H381.4V315.1L390.2 313.9V305.1H399.1V296.2H416.7V287.4H434.4V278.6H460.9V271H539.1V278.6H565.6V287.4H583.3V296.2H600.9V305.1H609.8V313.9H617.3L618.6 322.7H627.4Z"/>
+  </svg>
+  <div class="as-title">Device Cast</div>
+  <div id="sub" class="as-status">Looking for the sender on the local network…</div>
+</div>
+<script>
+// Minimal loader: finds the sender (port 8091) on the LAN and runs the receiver it serves,
+// so the receiver can be updated on the sender without reinstalling the TV app.
+var PORT = 8091;
+var sub = document.getElementById('sub');
+var found = false;
+var T0 = Date.now();
+var via = '?';
+
+function tryHost(ip, timeout, cb) {
+  // One reply per attempt: timeouts and errors also arrive as readyState 4.
+  var answered = false;
+  function reply(v) { if (!answered) { answered = true; cb(v); } }
+  var x = new XMLHttpRequest();
+  x.open('GET', 'http://' + ip + ':' + PORT + '/hello?t=' + Date.now(), true);
+  x.timeout = timeout;
+  x.onreadystatechange = function () {
+    if (x.readyState !== 4) return;
+    var ok = false;
+    try { ok = x.status === 200 && JSON.parse(x.responseText).app === 'devicecast'; } catch (e) {}
+    reply(ok ? ip : null);
+  };
+  x.ontimeout = function () { reply(null); };
+  x.onerror = function () { reply(null); };
+  try { x.send(); } catch (e) { reply(null); }
+}
+
+function go(ip) {
+  if (found) return;
+  found = true;
+  try { localStorage.setItem('devicecast.ip', ip); } catch (e) {}
+  sub.textContent = 'Sender found at ' + ip + ', starting…';
+  // Download the receiver and run it here: navigating to an external page takes ~30 s on some TVs.
+  var x = new XMLHttpRequest();
+  x.open('GET', 'http://' + ip + ':' + PORT + '/receiver.js?via=' + via + '&ms=' + (Date.now() - T0), true);
+  x.timeout = 8000;
+  x.onreadystatechange = function () {
+    if (x.readyState !== 4) return;
+    if (x.status === 200) {
+      window.DEVICECAST_HOST = ip + ':' + PORT;
+      try { (new Function(x.responseText))(); return; } catch (e) { sub.textContent = 'Receiver error: ' + e; }
+    }
+    found = false;
+    setTimeout(start, 2000);
+  };
+  x.ontimeout = function () { found = false; setTimeout(start, 2000); };
+  x.send();
+}
+
+function scanSubnet(prefix, done) {
+  var pending = 0, next = 1, running = 0, MAX = 24, finished = false;
+  function launch() {
+    while (running < MAX && next <= 254 && !found) {
+      var ip = prefix + '.' + next++;
+      running++; pending++;
+      tryHost(ip, 1500, function (hit) {
+        running--; pending--;
+        if (hit) { via = 'scan'; go(hit); }
+        if (next <= 254 && !found) launch();
+        else if (pending === 0 && !found && !finished) { finished = true; done(); }
+      });
+    }
+  }
+  launch();
+}
+
+function validIp(ip) {
+  return typeof ip === 'string' && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip) &&
+    ip.indexOf('0.') !== 0 && ip.indexOf('127.') !== 0;
+}
+
+// The TV's own IPv4 address: Samsung webapis first, then Tizen systeminfo (Ethernet, then Wi-Fi).
+function getOwnIp(cb) {
+  var answered = false;
+  function reply(v) { if (!answered) { answered = true; cb(v); } }
+  try {
+    var ip = window.webapis && webapis.network && webapis.network.getIp();
+    if (validIp(ip)) { reply(ip); return; }
+  } catch (e) {}
+  var props = ['ETHERNET_NETWORK', 'WIFI_NETWORK'];
+  function query(i) {
+    if (i >= props.length) { reply(null); return; }
+    try {
+      tizen.systeminfo.getPropertyValue(props[i], function (net) {
+        if (net && validIp(net.ipAddress)) reply(net.ipAddress);
+        else query(i + 1);
+      }, function () { query(i + 1); });
+    } catch (e) { query(i + 1); }
+  }
+  query(0);
+  setTimeout(function () { reply(null); }, 3000);   // systeminfo callbacks may never fire
+}
+
+function scanOwnSubnet() {
+  getOwnIp(function (ip) {
+    if (found) return;
+    if (!ip) {
+      sub.textContent = 'Could not determine the TV network address. Check the network connection. Retrying…';
+      setTimeout(start, 4000);
+      return;
+    }
+    sub.textContent = 'Looking for the sender on the local network…';
+    scanSubnet(ip.split('.').slice(0, 3).join('.'), function () {
+      sub.textContent = 'Sender not found. Start casting on your computer and reopen Device Cast. Retrying…';
+      setTimeout(start, 4000);
+    });
+  });
+}
+
+function start() {
+  var last = null;
+  try { last = localStorage.getItem('devicecast.ip'); } catch (e) {}
+  // Right after launch the TV network drops replies for a few seconds: keep trying the last known
+  // sender (up to ~30 s) before falling back to the much slower subnet scan.
+  var tries = 0;
+  function tryLast() {
+    tries++;
+    sub.textContent = 'Connecting to ' + last + '…';
+    tryHost(last, 2500, function (hit) {
+      if (hit) { via = 'last-ip-' + tries; go(hit); }
+      else if (tries < 10) setTimeout(tryLast, 400);
+      else scanOwnSubnet();
+    });
+  }
+  if (last) tryLast(); else scanOwnSubnet();
+}
+
+document.addEventListener('keydown', function (e) {
+  // Remote control Return/Back key exits the app.
+  if (e.keyCode === 10009 && window.tizen) { try { tizen.application.getCurrentApplication().exit(); } catch (x) {} }
+});
+start();
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+*.pyc
+
+# Local state, logs and third-party tools (Tizen Studio, signing certificates, DeskPad)
+/data/
+/tools.noindex/
+
+# Build output
+/Device Cast.app/
+/receiver/tizen/.buildResult/
+*.wgt
+/app/assets/AppIcon-1024.png
