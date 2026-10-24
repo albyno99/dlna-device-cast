@@ -155,6 +155,7 @@ sudo ifconfig awdl0 down     # sudo ifconfig awdl0 up to restore it
 ## Security
 
 The stream is not encrypted or authenticated. Use Device Cast only on a network you trust.
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 - The low-latency server only answers the TV it was started for, loopback and addresses given with
   `--allow`. Started without `--tv` or `--allow`, it answers any address and logs a warning.
@@ -192,3 +193,8 @@ receiver/tizen/   Samsung Tizen receiver app and install script
 data/             local state and log (not tracked)
 tools.noindex/    Tizen Studio, DeskPad, compiled helpers (not tracked; ignored by Spotlight)
 ```
+
+## License
+
+Copyright 2026 Alberto Sesia. Licensed under the [Apache License 2.0](LICENSE).
+Redistributions and derivative works must keep the [NOTICE](NOTICE) file and credit the original author.

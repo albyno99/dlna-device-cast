@@ -1,0 +1,12 @@
+Device Cast
+Copyright 2026 Alberto Sesia
+
+This product is developed by Alberto Sesia and licensed under the Apache License,
+Version 2.0. Redistributions and derivative works must retain this NOTICE file and
+give appropriate credit to the original author, as required by section 4 of the
+License.
+
+This product bundles the following third-party fonts in receiver/tizen/fonts/,
+licensed under the SIL Open Font License 1.1:
+- Space Grotesk, Copyright 2020 The Space Grotesk Project Authors
+- JetBrains Mono, Copyright 2020 The JetBrains Mono Project Authors
