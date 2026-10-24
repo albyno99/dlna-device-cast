@@ -66,9 +66,9 @@ func ownProcessObject() -> AudioObjectID {
 
 // MARK: - Delay line
 
-/// Stereo ring buffer. The I/O thread writes the captured audio and reads it back `delay` frames
-/// later. Delay changes under 100 ms are reached by playing 5% slower or faster (inaudible), larger
-/// ones by jumping.
+/// Stereo ring buffer. The I/O thread writes the captured audio and reads it back `target` seconds
+/// later. The position is checked once per I/O block: small errors are corrected by playing at most 1%
+/// slower or faster (inaudible), errors over 100 ms (e.g. switching between tiles and video) by jumping.
 final class DelayLine {
     let capacity: Int
     var left: [Float], right: [Float]
@@ -76,6 +76,7 @@ final class DelayLine {
     var readPos = 0.0
     var sampleRate: Double
     var target = 0.0          // seconds; written by the command thread
+    var rate = 1.0            // playback speed for the current I/O block
     var peak: Float = 0
 
     init(sampleRate: Double, maxSeconds: Double = 4) {
@@ -92,14 +93,22 @@ final class DelayLine {
         peak = max(peak, abs(l), abs(r))
     }
 
-    func read() -> (Float, Float) {
-        let want = Double(writePos) - min(target, Double(capacity) / sampleRate - 0.1) * sampleRate
-        let diff = want - readPos
-        if abs(diff) > 0.1 * sampleRate {
-            readPos = want                                   // big change: jump
+    /// Called once per I/O block, after the block's input has been written and before its `frames`
+    /// output samples are read.
+    func beginOutput(frames: Int) {
+        let delay = min(target, Double(capacity) / sampleRate - 0.2) * sampleRate
+        let ideal = Double(writePos - frames) - delay        // where this block should start reading
+        let err = ideal - readPos
+        if abs(err) > 0.1 * sampleRate {
+            readPos = ideal
+            rate = 1
         } else {
-            readPos += diff > 1 ? 1.05 : (diff < -1 ? 0.95 : 1)
+            rate = 1 + max(-1, min(1, err / (0.05 * sampleRate))) * 0.01
         }
+    }
+
+    func read() -> (Float, Float) {
+        defer { readPos += rate }
         if readPos < Double(writePos - capacity + 1) || readPos > Double(writePos - 1) {
             return (0, 0)
         }
@@ -181,6 +190,7 @@ final class AudioDelay {
             guard let firstOut = output.first else { return }
             let outCh = max(1, Int(firstOut.mNumberChannels))
             let frames = Int(firstOut.mDataByteSize) / (4 * outCh)
+            dl.beginOutput(frames: frames)
             for i in 0..<frames {
                 let (l, r) = dl.read()
                 var c = 0

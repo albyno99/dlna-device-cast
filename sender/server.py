@@ -300,6 +300,9 @@ DISPLAY_LATENCY = 0.05   # typical TV panel processing, not measurable from here
 VIDEO_PIPELINE = 0.20    # capture, H.264 encoding and 100 ms MP4 fragments before the TV buffer
 
 
+AUDIO_SYNC_STEP = 0.06     # seconds; smaller latency changes do not move the audio delay
+
+
 class AudioSync:
     """Delays the computer's own audio (speakers or headphones) by the measured latency of the picture
     on the TV, using the audiodelay helper (Core Audio process tap, macOS 14.2+)."""
@@ -307,7 +310,7 @@ class AudioSync:
     def __init__(self, offset):
         self.offset = offset
         self.proc = None
-        self.samples = collections.deque(maxlen=5)
+        self.samples = collections.deque(maxlen=9)
         self.current = None
         self.lock = threading.Lock()
 
@@ -330,7 +333,8 @@ class AudioSync:
                 return
             self.samples.append(picture_latency)
             target = max(0.0, sorted(self.samples)[len(self.samples) // 2] + self.offset)
-            if self.current is None or abs(target - self.current) >= 0.03:
+            # Ignore small fluctuations: every change makes the helper glide to the new delay.
+            if self.current is None or abs(target - self.current) >= AUDIO_SYNC_STEP:
                 self.current = target
                 try:
                     self.proc.stdin.write(f"delay {target:.3f}\n".encode())
