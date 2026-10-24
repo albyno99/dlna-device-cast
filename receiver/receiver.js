@@ -152,6 +152,7 @@
 
   document.addEventListener('keydown', function (e) {
     // Remote control: Return (10009) exits; Info/Green (10073/404) toggles the stats overlay.
+    // Other keys are not consumed, so receiver add-ons can use them (see receiver/addons/README.md).
     if (e.keyCode === 10009) { try { window.tizen.application.getCurrentApplication().exit(); } catch (x) { history.back(); } }
     if (e.keyCode === 404 || e.keyCode === 10073 || e.key === 'i') { showOsd = !showOsd; osd.style.display = showOsd ? 'block' : 'none'; }
   });

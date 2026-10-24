@@ -704,8 +704,8 @@ def hand_off_to_server(opt, tv_ip):
         # Quality menu toggles of the menu bar app
         if cfg.get("auto_quality", True) is False:
             args += ["--no-auto-quality"]
-        if cfg.get("auto_video", True) is False:
-            args += ["--no-auto-video"]
+        # Video mode is switched from the menu while casting, through this file.
+        args += ["--control", os.path.join(DATA_DIR, "control")]
         if cfg.get("audio_sync", True) is False:
             args += ["--no-audio-sync"]
         if cfg.get("audio_offset_ms"):

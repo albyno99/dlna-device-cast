@@ -18,8 +18,8 @@ through a small receiver app.
   resolution. Typing or moving a window costs a few kilobytes.
 - **Adaptive quality.** Large moving regions are sent at reduced resolution and refined when they stop
   moving. When the network saturates, moving regions are reduced further; static text stays sharp.
-- **Automatic video mode.** When a video starts playing, the sender switches to H.264 for smooth playback
-  and switches back to tiles when it stops.
+- **Video mode.** For movies, switch to H.264 from the menu while casting, and back to tiles when done.
+  The switch takes effect at once, without restarting the cast.
 - **Audio in sync.** The computer's sound stays on its speakers or headphones and is delayed by the
   measured latency of the picture on the TV, so lip sync holds even in video mode (macOS 14.2 or later).
 - **Separate cursor channel.** The pointer position is sent 60 times per second and drawn by the receiver,
@@ -60,12 +60,12 @@ Keep the app in the project folder: it runs the scripts in `sender/` next to it 
 | Item | Purpose |
 |---|---|
 | Start / Stop casting | also available from the Dock menu, or by opening the app again |
+| Video mode | while casting: H.264 for smooth movies (about half a second of delay), off for tiles |
 | TV | TVs found on the network; the choice is remembered by UPnP identifier, not IP address |
 | Screen to cast | main display, another display, or the TV as an extended display (DeskPad) |
 | Quality | 540p, 720p or 1080p |
 | Low latency | tiles mode (on) or H.264 video with audio (off) |
 | Automatic quality | lets the sender reduce moving regions when the network saturates |
-| Automatic video | switches to H.264 while a video is playing |
 | Audio delay | the computer's audio follows the TV picture; see [Audio sync](#audio-sync) |
 | Open log | `data/devicecast.log` |
 
@@ -112,14 +112,21 @@ The receiver app (`receiver/tizen/`) is a small loader: it finds the sender on t
    receiver/tizen/install.sh <tv-ip> devicecast
    ```
 
-The sender opens the app on the TV when casting starts and closes it when casting stops.
+The sender opens the app on the TV when casting starts and closes it when casting stops. Closing the app
+on the TV (Back or Home on the remote) ends the cast too, and removes the DeskPad display.
+
+### Receiver add-ons
+
+JavaScript files placed in `receiver/addons/` are appended to the receiver code the sender serves, so
+they run on the TV during a cast, for example to show notifications over the picture. The folder is
+ignored by git. See [receiver/addons/README.md](receiver/addons/README.md).
 
 ## How it works
 
 ```
 macOS                                                    TV
 ScreenCaptureKit -> screencap (dirty regions, JPEG) --+
-ffmpeg (H.264, while a video plays) ------------------+-> server.py :8091 -> WebSocket -> receiver.js
+ffmpeg (H.264, in video mode) ------------------------+-> server.py :8091 -> WebSocket -> receiver.js
 cursor position and shape ----------------------------+                                   canvas + <video>
 ```
 
@@ -137,7 +144,7 @@ cursor position and shape ----------------------------+                         
 ## Audio sync
 
 The picture reaches the TV a little later than it appears on the computer: a few hundredths of a second
-in tiles mode, about half a second while a video plays through the TV's media player. To keep sound and
+in tiles mode, about half a second in video mode, where the TV's media player plays H.264. To keep sound and
 picture together, Device Cast captures the system audio with a Core Audio process tap, mutes it at the
 source and plays it back on the current output device (speakers or headphones) delayed by the latency
 the receiver reports. If the helper stops for any reason, macOS restores the original audio.
@@ -154,7 +161,7 @@ turn the feature off.
 |---|---|
 | `codec` | `tiles` (default with low latency), `jpeg`, `h264` |
 | `mode` | `auto` (default), `tizen`, `dlna` |
-| `auto_quality`, `auto_video`, `audio_sync` | `true` / `false` |
+| `auto_quality`, `audio_sync` | `true` / `false` (default `true`) |
 | `audio_offset_ms` | extra audio delay in milliseconds, can be negative |
 | `jpeg_q` | JPEG quality for the `jpeg` codec, 2 (best) to 31 |
 | `extra_args` | extra arguments passed to `devicecast.py cast` |
@@ -209,6 +216,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 app/              menu bar app (Swift), build script, icons
 sender/           devicecast.py, server.py, screencap.swift, audiodelay.swift, deskpad.py
 receiver/         receiver.js, receiver.html
+receiver/addons/  local receiver add-ons (not tracked)
 receiver/tizen/   Samsung Tizen receiver app and install script
 data/             local state and log (not tracked)
 tools.noindex/    Tizen Studio, DeskPad, compiled helpers (not tracked; ignored by Spotlight)

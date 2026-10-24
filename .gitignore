@@ -6,6 +6,10 @@ __pycache__/
 /data/
 /tools.noindex/
 
+# Local receiver add-ons (only the README is tracked)
+/receiver/addons/*
+!/receiver/addons/README.md
+
 # Build output
 /Device Cast.app/
 /receiver/tizen/.buildResult/

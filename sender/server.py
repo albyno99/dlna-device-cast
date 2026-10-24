@@ -8,7 +8,8 @@ buffer. Without MediaSource it falls back to JPEG frames or MJPEG.
 
 Endpoints:
   GET /hello          discovery (the receiver scans the network for this server)
-  GET /receiver.js    receiver code, served from here so it updates without reinstalling the app
+  GET /receiver.js    receiver code plus local add-ons (receiver/addons/*.js), served from here so it
+                      updates without reinstalling the app
   WS  /ws             fragmented MP4 (H.264 + AAC) for MediaSource, one shared ffmpeg
   WS  /wsj            JPEG frames, latest frame only
   WS  /wst            changed screen tiles from the screencap helper, plus the cursor channel
@@ -42,6 +43,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 RECEIVER_DIR = os.path.join(ROOT, "receiver")
+ADDON_DIR = os.path.join(RECEIVER_DIR, "addons")
+ADDON_MAX_BYTES = 512 * 1024
 PORT = 8091
 APP_ID = "DevCast001.DeviceCast"
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -376,6 +379,7 @@ class TileHub:
         self.lock = threading.Lock()
         self.proc = None
         self.owner = None
+        self.idle_mark = None
         self.stopping = False
         self.last_error = ""
         self.updates = 0
@@ -466,10 +470,19 @@ class TileHub:
             return data, n
 
     def stop_when_idle(self, delay=10):
-        """Stop screencap if no receiver reconnects within `delay` seconds (it captures at 60 fps)."""
+        """Called when the receiver disconnects. After a network glitch the receiver reconnects within
+        a couple of seconds; if none is back after `delay` seconds the app on the TV was closed, so the
+        cast ends (which also closes DeskPad). Without --tv only the capture helper is stopped."""
+        mark = self.idle_mark = object()   # a later disconnect replaces this check
+
         def check():
             time.sleep(delay)
-            if self.owner is None and self.proc is not None:
+            if self.owner is not None or self.idle_mark is not mark:
+                return
+            if Handler.opt is not None and Handler.opt.tv and Handler.httpd is not None:
+                log("Device Cast was closed on the TV: stopping the cast")
+                threading.Thread(target=Handler.httpd.shutdown, daemon=True).start()
+            elif self.proc is not None:
                 log("no receiver connected: stopping the capture helper")
                 self.stop()
                 self.stopping = False
@@ -768,6 +781,27 @@ class Handler(BaseHTTPRequestHandler):
     refused = set()
     refused_lock = threading.Lock()
 
+    control_cache = (None, False)
+
+    @classmethod
+    def video_wanted(cls):
+        """True while the control file (written by the menu bar app) asks for video mode."""
+        path = getattr(cls.opt, "control", None)
+        if not path:
+            return False
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            return False
+        if mtime != cls.control_cache[0]:
+            try:
+                with open(path) as f:
+                    text = f.read(64).strip()
+            except OSError:
+                text = ""
+            cls.control_cache = (mtime, text == "video")
+        return cls.control_cache[1]
+
     def _client_allowed(self):
         """Reply 403 to clients outside the allowlist. Loopback is always allowed."""
         ip = self.client_address[0]
@@ -915,7 +949,10 @@ class Handler(BaseHTTPRequestHandler):
                 body = f"{name} is missing from the receiver folder".encode()
             if name == "receiver.js":
                 q = self.path.split("?", 1)[1] if "?" in self.path else ""
-                log(f"receiver {self.client_address[0]}: loading receiver ({printable(q.replace('&', ', '))})")
+                addons, names = receiver_addons()
+                body += addons
+                log(f"receiver {self.client_address[0]}: loading receiver ({printable(q.replace('&', ', '))})" +
+                    (f", add-ons: {', '.join(printable(n) for n in names)}" if names else ""))
             ctype = "application/javascript; charset=utf-8" if name.endswith(".js") else "text/html; charset=utf-8"
             self._send(200, ctype, body)
         elif path == "/ws":
@@ -1115,6 +1152,26 @@ class Handler(BaseHTTPRequestHandler):
         # falls when it is idle.
         level, lvl_t, lvl_wait, calm = 0, time.time(), 0.0, 0
         mode, video_since, novideo_since = "tiles", None, None
+        manual_video = False    # video mode chosen from the menu: no automatic switch back
+
+        def to_video():
+            nonlocal mode, novideo_since
+            send(0x1, b"mode h264")
+            Handler.jpeg_samples.clear()
+            if Handler.audio_sync is not None:
+                Handler.audio_sync.reset()
+            mode, novideo_since = "video", None
+
+        def to_tiles():
+            nonlocal mode, cmd, video_since
+            send(0x1, b"mode tiles")
+            Handler.jpeg_samples.clear()
+            if Handler.audio_sync is not None:
+                Handler.audio_sync.reset()
+            mode, cmd, video_since = "tiles", "full", None
+            with window:
+                state.update(inflight=0, undrawn=0, tvq=0)
+                state["sizes"].clear(); state["sent_at"].clear()
 
         def strip_meta(data, n):
             """Remove the "video region" entry (a zero-byte tile, always last) and return it."""
@@ -1131,9 +1188,15 @@ class Handler(BaseHTTPRequestHandler):
         prof = {"win": 0.0, "req": 0.0, "send": 0.0, "n": 0, "t": time.time(), "net": 0, "tv": 0, "bytes": 0}
         try:
             while not closed.is_set() and hub.owner is me:
+                want_video = Handler.video_wanted()
                 if mode == "video":
-                    # the receiver is playing H.264; only check whether the video is still running
                     time.sleep(0.3)
+                    if manual_video:
+                        if not want_video:
+                            log("  video mode off: back to tiles")
+                            to_tiles()
+                        continue
+                    # automatic video: only check whether the video is still running
                     got = hub.request("probe")
                     if got is None:
                         break
@@ -1144,15 +1207,14 @@ class Handler(BaseHTTPRequestHandler):
                         novideo_since = novideo_since or time.time()
                         if time.time() - novideo_since >= 2:
                             log("  video ended: back to tiles")
-                            send(0x1, b"mode tiles")
-                            Handler.jpeg_samples.clear()
-                            if Handler.audio_sync is not None:
-                                Handler.audio_sync.reset()
-                            mode, cmd, video_since = "tiles", "full", None
-                            with window:
-                                state.update(inflight=0, undrawn=0, tvq=0)
-                                state["sizes"].clear(); state["sent_at"].clear()
+                            to_tiles()
                     continue
+                if want_video:
+                    log("  video mode on: switching to H.264")
+                    to_video()
+                    manual_video = True
+                    continue
+                manual_video = False
                 a = time.time()
                 # Throttle on data still sitting in the local send buffer. This does not depend on
                 # receiver acks, which arrive late because the TV batches small packets.
@@ -1203,11 +1265,7 @@ class Handler(BaseHTTPRequestHandler):
                         video_since = video_since or time.time()
                         if time.time() - video_since >= 1.5:
                             log(f"  video detected, {meta[2]}x{meta[3]} at ({meta[0]},{meta[1]}): switching to H.264")
-                            send(0x1, b"mode h264")
-                            Handler.jpeg_samples.clear()
-                            if Handler.audio_sync is not None:
-                                Handler.audio_sync.reset()
-                            mode, novideo_since = "video", None
+                            to_video()
                             continue
                     else:
                         video_since = None
@@ -1323,6 +1381,36 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
 
+def receiver_addons():
+    """Local receiver add-ons: every receiver/addons/*.js (symbolic links followed), in name order,
+    read at each request. Each one is embedded as a string and compiled on its own inside try/catch,
+    so a syntax or runtime error in an add-on does not stop the receiver. Returns (code, names)."""
+    try:
+        entries = sorted(os.listdir(ADDON_DIR))
+    except OSError:
+        return b"", []
+    code, names = [], []
+    for name in entries:
+        if not name.endswith(".js") or name.startswith("."):
+            continue
+        try:
+            with open(os.path.join(ADDON_DIR, name), "rb") as f:
+                src = f.read(ADDON_MAX_BYTES + 1)
+        except OSError as e:
+            log(f"receiver add-on {name} skipped: {e}")
+            continue
+        if len(src) > ADDON_MAX_BYTES:
+            log(f"receiver add-on {name} skipped: larger than {ADDON_MAX_BYTES // 1024} KB")
+            continue
+        # json.dumps escapes U+2028/U+2029, which older JavaScript engines reject inside strings.
+        code.append("\n;(function () {\n"
+                    f"  try {{ (new Function({json.dumps(src.decode('utf-8', 'replace'))}))(); }}\n"
+                    f"  catch (e) {{ try {{ console.error('add-on ' + {json.dumps(name)} + ' failed', e); }} catch (x) {{}} }}\n"
+                    "})();\n")
+        names.append(name)
+    return "".join(code).encode("utf-8"), names
+
+
 def close_tv_app(tv_ip):
     try:
         req = urllib.request.Request(f"http://{tv_ip}:8001/api/v2/applications/{APP_ID}", method="DELETE")
@@ -1341,13 +1429,23 @@ def launch_tv_app(tv_ip):
     sdb = os.environ.get("TIZEN_SDB") or os.path.join(ROOT, "tools.noindex", "tizen-studio", "tools", "sdb")
     if os.path.exists(sdb):
         try:
-            subprocess.run([sdb, "connect", tv_ip], capture_output=True, timeout=8)
-            r = subprocess.run([sdb, "-s", f"{tv_ip}:26101", "shell", "0", "was_execute", APP_ID],
-                               capture_output=True, text=True, timeout=12)
-            if "launched" in (r.stdout + r.stderr).lower():
-                log("Device Cast app launched on the TV (sdb)")
-                return True
-            log("sdb: " + (r.stdout + r.stderr).strip()[:120])
+            # Right after the TV is switched on its sdb service takes a few seconds to accept
+            # connections; keep trying, because the REST fallback gets the app suspended.
+            out = ""
+            for attempt in range(8):
+                subprocess.run([sdb, "connect", tv_ip], capture_output=True, timeout=8)
+                r = subprocess.run([sdb, "-s", f"{tv_ip}:26101", "shell", "0", "was_execute", APP_ID],
+                                   capture_output=True, text=True, timeout=12)
+                out = (r.stdout + r.stderr).strip()
+                if "launched" in out.lower():
+                    log("Device Cast app launched on the TV (sdb)")
+                    return True
+                if "not found" not in out.lower() and "wrong" not in out.lower():
+                    break
+                if attempt == 0:
+                    log("waiting for the TV's developer connection (sdb)…")
+                time.sleep(2)
+            log("sdb: " + out[:120])
         except subprocess.TimeoutExpired:
             log("sdb not responding: restarting its server and trying the REST API")
             subprocess.run([sdb, "kill-server"], capture_output=True, timeout=5)
@@ -1411,8 +1509,10 @@ def main():
     ap.add_argument("--jpeg-q", type=int, default=6, help="ffmpeg JPEG quality, 2 (high) to 31 (low)")
     ap.add_argument("--no-auto-quality", dest="auto_quality", action="store_false",
                     help="tiles: do not reduce moving regions when the network is saturated")
-    ap.add_argument("--no-auto-video", dest="auto_video", action="store_false",
-                    help="tiles: do not switch to H.264 when a video plays on screen")
+    ap.add_argument("--auto-video", action="store_true",
+                    help="tiles: switch to H.264 by itself when a video plays on screen")
+    ap.add_argument("--control", metavar="FILE",
+                    help="tiles: switch to H.264 while FILE contains 'video' (written by the menu bar app)")
     ap.add_argument("--no-audio-sync", dest="audio_sync", action="store_false",
                     help="tiles: do not delay the computer's audio to match the picture on the TV")
     ap.add_argument("--audio-offset", type=float, default=0.0, metavar="SECONDS",

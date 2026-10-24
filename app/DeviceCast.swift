@@ -14,6 +14,8 @@ let projectDir: String = {
 let dataDir = projectDir + "/data"
 let logPath = dataDir + "/devicecast.log"
 let configPath = dataDir + "/config.json"
+/// Read by the server while casting: "video" switches the TV to H.264, "tiles" back to tiles.
+let controlPath = dataDir + "/control"
 let scriptPath = projectDir + "/sender/devicecast.py"
 
 struct TV { let udn: String; let name: String; let ip: String; let model: String; let location: String }
@@ -58,7 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var qualityIndex: Int { config["quality"] as? Int ?? 0 }
     var latencyLow: Bool { (config["latency"] as? String ?? "low") == "low" }
     var autoQuality: Bool { config["auto_quality"] as? Bool ?? true }
-    var autoVideo: Bool { config["auto_video"] as? Bool ?? true }
+    /// Video mode (H.264) for the current cast, chosen from the menu. Every cast starts in tiles mode.
+    var videoMode = false
 
     // MARK: Lifecycle
 
@@ -131,6 +134,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             config = obj
         }
+        // Video mode is now chosen from the menu while casting; drop the old automatic setting.
+        if config.removeValue(forKey: "auto_video") != nil { saveConfig() }
     }
 
     func saveConfig() {
@@ -268,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             p.standardError = fh
         }
         stoppingOnPurpose = false
+        setVideoMode(false)
         p.terminationHandler = { proc in
             DispatchQueue.main.async { self.castEnded(status: proc.terminationStatus) }
         }
@@ -308,6 +314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
         } else if tail.contains("TV stopped playback") {
             setStatus("TV stopped playback")
+        } else if tail.contains("Device Cast was closed on the TV") {
+            setStatus("Casting stopped on the TV")
         } else {
             let reason = tail.split(separator: "\n").last.map(String.init) ?? ""
             setStatus("Casting interrupted: " + reason.prefix(70))
@@ -358,6 +366,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let it = NSMenuItem(title: "Stop casting", action: #selector(stopClicked), keyEquivalent: "s")
             it.target = self
             menu.addItem(it)
+            if latencyLow {
+                let vm = NSMenuItem(title: "Video mode (smooth movies, slight delay)", action: #selector(videoModeClicked), keyEquivalent: "v")
+                vm.target = self; vm.state = videoMode ? .on : .off
+                menu.addItem(vm)
+            }
         }
         menu.addItem(.separator())
 
@@ -412,9 +425,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let aq = NSMenuItem(title: "Automatic quality (adapts to the network)", action: #selector(autoQualityClicked), keyEquivalent: "")
         aq.target = self; aq.state = autoQuality ? .on : .off; aq.isEnabled = latencyLow
         qMenu.addItem(aq)
-        let av = NSMenuItem(title: "Automatic video (H.264 for movies)", action: #selector(autoVideoClicked), keyEquivalent: "")
-        av.target = self; av.state = autoVideo ? .on : .off; av.isEnabled = latencyLow
-        qMenu.addItem(av)
         let qItem = NSMenuItem(title: "Quality", action: nil, keyEquivalent: "")
         qItem.submenu = qMenu
         menu.addItem(qItem)
@@ -487,9 +497,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveConfig(); rebuildMenu(); restartIfCasting()
     }
 
-    @objc func autoVideoClicked() {
-        config["auto_video"] = !autoVideo
-        saveConfig(); rebuildMenu(); restartIfCasting()
+    @objc func videoModeClicked() {
+        setVideoMode(!videoMode)
+        rebuildMenu()
+    }
+
+    /// Takes effect on the running cast within a fraction of a second, without restarting it.
+    func setVideoMode(_ on: Bool) {
+        videoMode = on
+        try? FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
+        try? (on ? "video\n" : "tiles\n").write(toFile: controlPath, atomically: true, encoding: .utf8)
     }
 
     @objc func latencyClicked() {
