@@ -419,6 +419,8 @@ class TileHub:
             return True
         args = [SCREENCAP, "--fps", "60", "--quality", "0.62", "--full-quality", "0.5",
                 "--width", str(self.opt.width), "--height", str(self.opt.height)]
+        if not self.opt.auto_quality:
+            args += ["--no-downscale"]   # constant quality: moving regions stay at full resolution
         if self.opt.source == "test":
             args += ["--test"]
         elif self.opt.source == "test-scroll":
@@ -1508,7 +1510,7 @@ def main():
                          "tiles: changed regions only, native 1080p, minimum latency")
     ap.add_argument("--jpeg-q", type=int, default=6, help="ffmpeg JPEG quality, 2 (high) to 31 (low)")
     ap.add_argument("--no-auto-quality", dest="auto_quality", action="store_false",
-                    help="tiles: do not reduce moving regions when the network is saturated")
+                    help="tiles: constant quality, moving regions are never sent at reduced resolution")
     ap.add_argument("--auto-video", action="store_true",
                     help="tiles: switch to H.264 by itself when a video plays on screen")
     ap.add_argument("--control", metavar="FILE",

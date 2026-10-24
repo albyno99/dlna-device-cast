@@ -14,6 +14,7 @@
 // marks the region detected as video playback. "probe" returns the header plus that tile, if any.
 //
 // Usage: screencap --display N [--width W --height H] [--fps F] [--quality Q] [--full-quality Q]
+//                  [--no-downscale]   (always send moving regions at full resolution)
 //                  [--cursor-fd FD]
 //        screencap --test | --test-scroll | --test-video    (synthetic source, no screen capture)
 import AppKit
@@ -44,6 +45,7 @@ var testMode = false
 var cursorFD: Int32 = -1     // cursor position and shape are written here when set
 var testScroll = false   // whole screen changes every frame, like scrolling
 var testVideo = false    // a fixed region changes every frame, like a video in a window
+var downscaleMotion = true   // send large moving regions downscaled, then sharp once still
 var args = Array(CommandLine.arguments.dropFirst())
 while !args.isEmpty {
     let a = args.removeFirst()
@@ -58,6 +60,7 @@ while !args.isEmpty {
     case "--fps": fps = Int(val()) ?? 30
     case "--quality": tileQuality = Double(val()) ?? 0.8
     case "--full-quality": fullQuality = Double(val()) ?? 0.6
+    case "--no-downscale": downscaleMotion = false
     case "--test": testMode = true
     case "--cursor-fd": cursorFD = Int32(val()) ?? -1
     case "--test-scroll": testMode = true; testScroll = true
@@ -280,7 +283,7 @@ func respond(full: Bool) {
     let area = merged.reduce(0.0) { $0 + $1.width * $1.height }
     // Large moving regions (video, dragged window, scrolling) go out downscaled as a single piece:
     // a fraction of the data and no seams. Small regions (text, pointer) always stay sharp.
-    let motion = !full && !refine && area > CGFloat(w * h) * 0.08
+    let motion = downscaleMotion && !full && !refine && area > CGFloat(w * h) * 0.08
     state.cond.lock(); let lvl = max(0, min(3, state.level)); state.cond.unlock()
     let motionScale: [CGFloat] = [0.5, 0.4, 0.33, 0.25]
     let motionQuality: [Double] = [fullQuality, fullQuality - 0.05, fullQuality - 0.08, fullQuality - 0.1]

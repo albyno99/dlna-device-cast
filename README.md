@@ -18,6 +18,7 @@ through a small receiver app.
   resolution. Typing or moving a window costs a few kilobytes.
 - **Adaptive quality.** Large moving regions are sent at reduced resolution and refined when they stop
   moving. When the network saturates, moving regions are reduced further; static text stays sharp.
+  Turn off Automatic quality for constant full quality.
 - **Video mode.** For movies, switch to H.264 from the menu while casting, and back to tiles when done.
   The switch takes effect at once, without restarting the cast.
 - **Audio in sync.** The computer's sound stays on its speakers or headphones and is delayed by the
@@ -65,7 +66,7 @@ Keep the app in the project folder: it runs the scripts in `sender/` next to it 
 | Screen to cast | main display, another display, or the TV as an extended display (DeskPad) |
 | Quality | 540p, 720p or 1080p |
 | Low latency | tiles mode (on) or H.264 video with audio (off) |
-| Automatic quality | lets the sender reduce moving regions when the network saturates |
+| Automatic quality | on: moving regions are sent at reduced resolution and sharpened when they stop, more so when the network saturates; off: constant full quality |
 | Audio delay | the computer's audio follows the TV picture; see [Audio sync](#audio-sync) |
 | Open log | `data/devicecast.log` |
 
@@ -200,7 +201,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 | No TV found | Local Network permission missing, or the TV is on another network |
 | The TV app keeps looking for the sender | The sender is not running, or a firewall blocks port 8091 |
 | Pauses of a few hundred milliseconds | Packet loss on Wi-Fi; see [Network](#network) |
-| Video looks soft | Automatic quality reduced it on a saturated network; disable it in the Quality menu |
+| Moving content looks soft for a moment | Automatic quality sends moving regions at reduced resolution; turn it off in the Quality menu for constant quality |
 
 ## Third-party components
 
