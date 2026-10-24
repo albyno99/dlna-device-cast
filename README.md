@@ -37,8 +37,8 @@ through a small receiver app.
 ## Quick start
 
 ```bash
-git clone https://github.com/<user>/device-cast.git
-cd device-cast
+git clone https://github.com/albyno99/dlna-device-cast.git
+cd dlna-device-cast
 app/build.sh                 # builds "Device Cast.app" in the project folder
 open "Device Cast.app"
 ```
