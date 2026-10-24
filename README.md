@@ -20,6 +20,8 @@ through a small receiver app.
   moving. When the network saturates, moving regions are reduced further; static text stays sharp.
 - **Automatic video mode.** When a video starts playing, the sender switches to H.264 for smooth playback
   and switches back to tiles when it stops.
+- **Audio in sync.** The computer's sound stays on its speakers or headphones and is delayed by the
+  measured latency of the picture on the TV, so lip sync holds even in video mode (macOS 14.2 or later).
 - **Separate cursor channel.** The pointer position is sent 60 times per second and drawn by the receiver,
   so it stays smooth even when the network is busy.
 - **Extended display.** With [DeskPad](https://github.com/Stengo/DeskPad) the TV becomes a second
@@ -28,7 +30,7 @@ through a small receiver app.
 
 ## Requirements
 
-- macOS 13 or later
+- macOS 13 or later (14.2 or later for audio sync)
 - Xcode Command Line Tools (`xcode-select --install`), for `swiftc`
 - [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg`), used by the DLNA and H.264 modes
 - Optional: DeskPad, for the extended display
@@ -46,6 +48,10 @@ open "Device Cast.app"
 The app adds an icon to the menu bar and the Dock, finds TVs on the network and starts casting to the
 selected one. macOS asks for the **Screen Recording** and **Local Network** permissions on first use.
 
+Optionally, run `app/signing-identity.sh` once before building. It creates a self-signed code signing
+identity in your login keychain, used only on your Mac, so that rebuilds keep the same signature: macOS
+then keeps a single entry per permission instead of asking again after every build.
+
 Keep the app in the project folder: it runs the scripts in `sender/` next to it and stores its state in
 `data/`.
 
@@ -60,6 +66,7 @@ Keep the app in the project folder: it runs the scripts in `sender/` next to it 
 | Low latency | tiles mode (on) or H.264 video with audio (off) |
 | Automatic quality | lets the sender reduce moving regions when the network saturates |
 | Automatic video | switches to H.264 while a video is playing |
+| Audio delay | the computer's audio follows the TV picture; see [Audio sync](#audio-sync) |
 | Open log | `data/devicecast.log` |
 
 ## Command line
@@ -127,6 +134,18 @@ cursor position and shape ----------------------------+                         
 - `sender/devicecast.py` handles discovery (SSDP), the DLNA fallback, configuration and the hand-off to
   `server.py`.
 
+## Audio sync
+
+The picture reaches the TV a little later than it appears on the computer: a few hundredths of a second
+in tiles mode, about half a second while a video plays through the TV's media player. To keep sound and
+picture together, Device Cast captures the system audio with a Core Audio process tap, mutes it at the
+source and plays it back on the current output device (speakers or headphones) delayed by the latency
+the receiver reports. If the helper stops for any reason, macOS restores the original audio.
+
+macOS asks for the **System Audio Recording** permission the first time. Use `audio_offset_ms` in the
+configuration to fine-tune lip sync (positive values delay the audio more), or `audio_sync: false` to
+turn the feature off.
+
 ## Configuration
 
 `data/config.json` is written by the app. Keys that can also be edited by hand:
@@ -135,7 +154,8 @@ cursor position and shape ----------------------------+                         
 |---|---|
 | `codec` | `tiles` (default with low latency), `jpeg`, `h264` |
 | `mode` | `auto` (default), `tizen`, `dlna` |
-| `auto_quality`, `auto_video` | `true` / `false` |
+| `auto_quality`, `auto_video`, `audio_sync` | `true` / `false` |
+| `audio_offset_ms` | extra audio delay in milliseconds, can be negative |
 | `jpeg_q` | JPEG quality for the `jpeg` codec, 2 (best) to 31 |
 | `extra_args` | extra arguments passed to `devicecast.py cast` |
 
@@ -187,7 +207,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ```
 app/              menu bar app (Swift), build script, icons
-sender/           devicecast.py, server.py, screencap.swift, deskpad.py
+sender/           devicecast.py, server.py, screencap.swift, audiodelay.swift, deskpad.py
 receiver/         receiver.js, receiver.html
 receiver/tizen/   Samsung Tizen receiver app and install script
 data/             local state and log (not tracked)

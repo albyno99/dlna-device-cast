@@ -268,22 +268,92 @@ SCREENCAP = os.path.join(ROOT, "tools.noindex", "screencap")
 SCREENCAP_SRC = os.path.join(HERE, "screencap.swift")
 
 
-def ensure_screencap():
-    """Build screencap.swift if the binary is missing or older than the source. True when ready."""
+AUDIODELAY = os.path.join(ROOT, "tools.noindex", "audiodelay")
+AUDIODELAY_SRC = os.path.join(HERE, "audiodelay.swift")
+
+
+def ensure_helper(binary, source, frameworks):
+    """Build a Swift helper if the binary is missing or older than its source. True when ready."""
     try:
-        if os.path.exists(SCREENCAP) and os.path.getmtime(SCREENCAP) >= os.path.getmtime(SCREENCAP_SRC):
+        if os.path.exists(binary) and os.path.getmtime(binary) >= os.path.getmtime(source):
             return True
     except OSError:
-        return os.path.exists(SCREENCAP)
-    log("building screencap (tile capture)...")
-    os.makedirs(os.path.dirname(SCREENCAP), exist_ok=True)
-    r = subprocess.run(["swiftc", "-O", "-swift-version", "5", "-framework", "AppKit", "-framework", "ScreenCaptureKit", "-framework", "CoreImage",
-                        "-framework", "CoreMedia", "-framework", "CoreVideo", "-o", SCREENCAP, SCREENCAP_SRC],
-                       capture_output=True, text=True)
+        return os.path.exists(binary)
+    log(f"building {os.path.basename(binary)}...")
+    os.makedirs(os.path.dirname(binary), exist_ok=True)
+    cmd = ["swiftc", "-O", "-swift-version", "5"]
+    for fw in frameworks:
+        cmd += ["-framework", fw]
+    r = subprocess.run(cmd + ["-o", binary, source], capture_output=True, text=True)
     if r.returncode != 0:
-        log("screencap build failed: " + r.stderr[-300:])
+        log(f"{os.path.basename(binary)} build failed: " + r.stderr[-300:])
         return False
     return True
+
+
+def ensure_screencap():
+    return ensure_helper(SCREENCAP, SCREENCAP_SRC,
+                         ["AppKit", "ScreenCaptureKit", "CoreImage", "CoreMedia", "CoreVideo"])
+
+
+DISPLAY_LATENCY = 0.05   # typical TV panel processing, not measurable from here
+VIDEO_PIPELINE = 0.20    # capture, H.264 encoding and 100 ms MP4 fragments before the TV buffer
+
+
+class AudioSync:
+    """Delays the computer's own audio (speakers or headphones) by the measured latency of the picture
+    on the TV, using the audiodelay helper (Core Audio process tap, macOS 14.2+)."""
+
+    def __init__(self, offset):
+        self.offset = offset
+        self.proc = None
+        self.samples = collections.deque(maxlen=5)
+        self.current = None
+        self.lock = threading.Lock()
+
+    def start(self):
+        with self.lock:
+            if self.proc is not None and self.proc.poll() is None:
+                return
+            if not ensure_helper(AUDIODELAY, AUDIODELAY_SRC, ["CoreAudio", "AudioToolbox"]):
+                return
+            self.current = max(0.0, 0.1 + self.offset)
+            self.samples.clear()
+            self.proc = subprocess.Popen([AUDIODELAY, "--delay", f"{self.current:.3f}"],
+                                         stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+            drain_stderr(self.proc, forward=True)
+
+    def observe(self, picture_latency):
+        """picture_latency: seconds from capture to the TV screen, as measured for the current mode."""
+        with self.lock:
+            if self.proc is None or self.proc.poll() is not None:
+                return
+            self.samples.append(picture_latency)
+            target = max(0.0, sorted(self.samples)[len(self.samples) // 2] + self.offset)
+            if self.current is None or abs(target - self.current) >= 0.03:
+                self.current = target
+                try:
+                    self.proc.stdin.write(f"delay {target:.3f}\n".encode())
+                    self.proc.stdin.flush()
+                except OSError:
+                    pass
+
+    def reset(self):
+        """Forget the measurements (mode switch: tiles and video have very different latencies)."""
+        with self.lock:
+            self.samples.clear()
+
+    def stop(self):
+        with self.lock:
+            if self.proc is None:
+                return
+            try:
+                self.proc.stdin.write(b"quit\n")
+                self.proc.stdin.flush()
+                self.proc.wait(timeout=3)
+            except (OSError, subprocess.TimeoutExpired):
+                self.proc.kill()
+            self.proc = None
 
 
 def read_exact(stream, n):
@@ -689,6 +759,7 @@ class Handler(BaseHTTPRequestHandler):
     jhub = None
     thub = None
     jpeg_samples = collections.deque(maxlen=30)
+    audio_sync = None
     allowed = None              # set of allowed client IPs; None accepts everyone
     refused = set()
     refused_lock = threading.Lock()
@@ -754,6 +825,14 @@ class Handler(BaseHTTPRequestHandler):
                     Handler.jpeg_samples.append(now * 1000 - fa - eco)
             except (IndexError, ValueError):
                 pass
+        sync = Handler.audio_sync
+        if sync is not None:
+            m = re.search(r"video lag ([0-9.]+) s", body)
+            if m:
+                sync.observe(float(m.group(1)) + VIDEO_PIPELINE + DISPLAY_LATENCY)
+            elif " |eco=" in body and Handler.jpeg_samples:
+                tiles = sorted(Handler.jpeg_samples)[len(Handler.jpeg_samples) // 2] / 1000
+                sync.observe(tiles + DISPLAY_LATENCY)
         self._send(204, "text/plain", b"")
 
     def pipeline_report(self, ct_text, now):
@@ -1000,6 +1079,8 @@ class Handler(BaseHTTPRequestHandler):
         hub = self.thub
         me = object()
         hub.owner = me
+        if Handler.audio_sync is not None:
+            Handler.audio_sync.start()
         sent = 0
         cmd = "full"
         send_lock = threading.Lock()
@@ -1060,6 +1141,9 @@ class Handler(BaseHTTPRequestHandler):
                         if time.time() - novideo_since >= 2:
                             log("  video ended: back to tiles")
                             send(0x1, b"mode tiles")
+                            Handler.jpeg_samples.clear()
+                            if Handler.audio_sync is not None:
+                                Handler.audio_sync.reset()
                             mode, cmd, video_since = "tiles", "full", None
                             with window:
                                 state.update(inflight=0, undrawn=0, tvq=0)
@@ -1116,6 +1200,9 @@ class Handler(BaseHTTPRequestHandler):
                         if time.time() - video_since >= 1.5:
                             log(f"  video detected, {meta[2]}x{meta[3]} at ({meta[0]},{meta[1]}): switching to H.264")
                             send(0x1, b"mode h264")
+                            Handler.jpeg_samples.clear()
+                            if Handler.audio_sync is not None:
+                                Handler.audio_sync.reset()
                             mode, novideo_since = "video", None
                             continue
                     else:
@@ -1156,6 +1243,8 @@ class Handler(BaseHTTPRequestHandler):
             if hub.owner is me:
                 hub.owner = None
                 hub.stop_when_idle()
+                if Handler.audio_sync is not None:
+                    Handler.audio_sync.stop()
 
     # JPEG WebSocket: minimum latency.
     def handle_wsj(self):
@@ -1320,6 +1409,10 @@ def main():
                     help="tiles: do not reduce moving regions when the network is saturated")
     ap.add_argument("--no-auto-video", dest="auto_video", action="store_false",
                     help="tiles: do not switch to H.264 when a video plays on screen")
+    ap.add_argument("--no-audio-sync", dest="audio_sync", action="store_false",
+                    help="tiles: do not delay the computer's audio to match the picture on the TV")
+    ap.add_argument("--audio-offset", type=float, default=0.0, metavar="SECONDS",
+                    help="extra audio delay (negative: less), to fine-tune lip sync")
     ap.add_argument("--encoder", choices=["auto", "h264_videotoolbox", "libx264"], default="auto")
     ap.add_argument("--no-cursor", action="store_true", help="do not capture the mouse cursor")
     ap.add_argument("--tv", metavar="IP", help="TV address: launch the Device Cast app on it and allow it as a client")
@@ -1351,6 +1444,8 @@ def main():
 
     if opt.codec == "tiles":
         opt.bitrate = "3M"   # H.264 bitrate used while a video plays; fits typical Wi-Fi
+        if opt.audio_sync and opt.source == "screen":
+            Handler.audio_sync = AudioSync(opt.audio_offset)
     if opt.codec == "tiles" and not ensure_screencap():
         log("tile capture not available: using JPEG mode")
         opt.codec = "jpeg"
@@ -1421,6 +1516,8 @@ def main():
         if jh.proc:
             stop_proc(jh.proc)
         Handler.thub.stop()
+        if Handler.audio_sync is not None:
+            Handler.audio_sync.stop()
         failed = failed or (bool(jh.last_error) and jh.frames_made == 0 and bc.init is None)
         if opt.tv:
             close_tv_app(opt.tv)

@@ -17,7 +17,7 @@ ROOT="$(dirname "$HERE")"
 APP="$ROOT/Device Cast.app"
 SRC="$HERE/DeviceCast.swift"
 ASSETS=("$HERE/assets/AppIcon.icns" "$HERE/assets/MenuIcon.png" "$HERE/assets/MenuIcon@2x.png")
-SRC_HASH=$(cat "$SRC" "${ASSETS[@]}" | shasum -a 256 | cut -c1-16)
+SRC_HASH=$(cat "$SRC" "$0" "${ASSETS[@]}" | shasum -a 256 | cut -c1-16)
 
 if [ "${1:-}" != "--force" ] && [ -f "$APP/Contents/Resources/source.hash" ] \
    && [ "$(cat "$APP/Contents/Resources/source.hash")" = "$SRC_HASH" ]; then
@@ -50,13 +50,21 @@ cat > "$NEW/Contents/Info.plist" <<PLIST
   <key>DeviceCastProjectDir</key><string>$ROOT</string>
   <key>NSScreenCaptureUsageDescription</key><string>Device Cast captures the screen to send it to the TV.</string>
   <key>NSMicrophoneUsageDescription</key><string>Only needed if you choose to cast an audio device.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>Device Cast delays the computer's audio so that it stays in sync with the picture on the TV.</string>
   <key>NSLocalNetworkUsageDescription</key><string>Device Cast searches for the TV on the local network.</string>
 </dict></plist>
 PLIST
 
-# Ad-hoc signature: a stable identity for the permissions as long as the source does not change.
 xattr -cr "$NEW"
-codesign --force --sign - "$NEW"
+# Sign with the stable local identity when present (see app/signing-identity.sh): macOS then keeps one
+# entry per permission across rebuilds. Without it, ad-hoc signing creates a new entry on every build.
+IDENTITY="Device Cast Local Signing"
+if security find-identity -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
+  codesign --force --sign "$IDENTITY" "$NEW"
+else
+  echo "Signing ad hoc. Run app/signing-identity.sh once to keep permissions across rebuilds."
+  codesign --force --sign - "$NEW"
+fi
 rm -rf "$APP"
 mv "$NEW" "$APP"
 rmdir "$BUILD" 2>/dev/null || true

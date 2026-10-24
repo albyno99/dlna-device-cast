@@ -706,6 +706,10 @@ def hand_off_to_server(opt, tv_ip):
             args += ["--no-auto-quality"]
         if cfg.get("auto_video", True) is False:
             args += ["--no-auto-video"]
+        if cfg.get("audio_sync", True) is False:
+            args += ["--no-audio-sync"]
+        if cfg.get("audio_offset_ms"):
+            args += ["--audio-offset", str(float(cfg["audio_offset_ms"]) / 1000)]
     if codec == "jpeg":
         # ffmpeg JPEG quality (2 best - 31 worst): 9 keeps text-heavy frames around 70-90 KB,
         # which the TV's Wi-Fi transfers quickly.
